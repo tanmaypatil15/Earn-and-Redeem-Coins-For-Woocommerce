@@ -16,11 +16,6 @@ function register_custom_points_route() {
             'methods'  => array('GET', 'POST'),
             'callback' => 'handle_points_request',
             'args'     => array(
-                'user_email' => array(
-                    'description' => 'User Email for whom to retrieve points.',
-                    'type'        => 'string',
-                    'required'    => false,
-                ),
                 'user_id'    => array(
                     'description' => 'User ID for whom to retrieve points.',
                     'type'        => 'integer',
@@ -37,20 +32,31 @@ function register_custom_points_route() {
                     'type'        => 'integer',
                     'required'    => false,
                 ),
-//                 'points_balance'  => array(
-//                     'description' => 'Number of points_balance to update/redeem.',
-//                     'type'        => 'integer',
-//                     'required'    => false,
-//                 ),
-// 				'redeem_points'  => array(
-//                     'description' => 'Number of points_balance to redeem.',
-//                     'type'        => 'integer',
-//                     'required'    => false,
-//                 ),
             ),
         )
     );
 }
+
+function get_user_id_by_email($user_email) {
+    $user = get_user_by('email', $user_email);
+    if ($user) {
+        return $user->ID;
+		
+    } else {
+        return 0; // Return 0 if the user is not found
+    }
+}
+
+
+function get_user_email_by_id($user_id) {
+    $user = get_user_by('ID', $user_id);
+    if ($user) {
+        return $user->user_email;
+    } else {
+        return 0; // Return 0 if the user is not found
+    }
+}
+
 
 function handle_points_request($request) {
     if ($request->get_method() === 'POST') {
@@ -58,11 +64,8 @@ function handle_points_request($request) {
     }
 
     $user_id    = $request->get_param('user_id');
-    $user_email = $request->get_param('user_email');
+    $user_email = get_user_email_by_id($user_id);
 
-    if (empty($user_id) && !empty($user_email)) {
-        $user_id = get_user_id_by_email($user_email);
-    }
 
     if (empty($user_id)) {
         return new WP_REST_Response(array('error' => 'Missing or invalid user_id parameter'), 400);
@@ -73,10 +76,9 @@ function handle_points_request($request) {
     $response_data = array(
         'message'         => 'GET request processed successfully',
         'user_id'         => $user_id,
-        'user_email'      => $user_data->user_email,
-        'points'          => $user_data->points,
-        'points_balance'  => $user_data->points_balance,
-        'order_id'        => $user_data->order_id,
+        'user_email'      => $user_email,
+        'overall_points'          => $user_data->total_points,
+        'points_balance'  => $user_data->total_points_balance,
     );
 
     return new WP_REST_Response($response_data, 200);
@@ -85,76 +87,77 @@ function handle_points_request($request) {
 
 function handle_points_post_request($request) {
     $data   = $request->get_json_params();
+
+    $user_id = $data['user_id'];
     $action = $data['action'];
+
+    //These points will be used for updating your database.
     $points = $data['points'];
     $points_balance = $data['points'];
+
+    //These points will be used for redeeming from your database.
 	$points_to_redeem = $data['points'];
-	
-    //var_dump($points_balance);
+
+
     // Validate action
     if (!in_array($action, array('update', 'redeem'))) {
         return new WP_REST_Response(array('error' => 'Invalid action'), 400);
     }
 
-    // Validate points
-    // if (!is_numeric($points) || $points <= 0) {
-    //     return new WP_REST_Response(array('error' => 'Invalid points value'), 400);
-    // }
+    //Validate points
+    if (!is_numeric($points) || $points <= 0) {
+        return new WP_REST_Response(array('error' => 'Invalid points value'), 400);
+    }
 
-    $user_id = $data['user_id'];
-    $user_email = $data['user_email'];
-
-    //var_dump($user_id);
-    //var_dump($user_email);
 
     if (empty($user_id)) {
         return new WP_REST_Response(array('error' => 'Missing user_id or user_email parameter'), 400);
     }
 
     if ($action === 'redeem') {
-        // Check if the user has enough points to redeem
         $user_data = get_user_data_by_id($user_id);
-        //var_dump($user_data->points_balance);
-        if ($user_data->points_balance < $points_to_redeem) {
 
+        // Check if the user has enough points to redeem
+        if ($user_data->points_balance < $points_to_redeem) {
             return new WP_REST_Response(array('error' => 'Insufficient points balance'), 400);
         }
 
         // Redeem points
         redeem_user_points($user_id, $points_to_redeem);
 		
+        // Fetching total user_points and user_balance.
 		$total_data = get_user_points_and_balance($user_id);
 
 		$response_data = array(
 			'message'         => 'POST request processed successfully',
 			'user_id'         => $user_id,
-			'redeem_points'  => $total_data->points_balance,
+			'overall_points'  => $total_data->points,
+            'points_balance'  => $total_data->points_balance,
 		);
 		
     } 
-    
+    // Update points
     elseif ($action === 'update') {
-        // Update points
         
 		if (!$user_id) {
 			return new WP_REST_Response(array('error' => 'User not found'), 404);
 		}
 
-		// Get user's current points and points balance
+        // Update points and points_balance in the database
+		update_user_points($user_id, $points, $points_balance);
+
+		// Get the user's current points and points balance
 		$total_data = get_user_points_and_balance($user_id);
 
 		// Calculate cumulative points and points balance
 		$cumulative_points = $total_data->points;
-		$cumulative_points_balance = $total_data->points_balance + $points;
+		$cumulative_points_balance = $total_data->points_balance;
 
-
-		// Update points and points_balance in the database
-		update_user_points($user_id, $cumulative_points, $cumulative_points_balance);
-		
 
 		$response_data = array(
 			'message'         => 'POST request processed successfully',
 			'user_id'         => $user_id,
+            'overall_points'  => $cumulative_points,
 			'points_balance'  => $cumulative_points_balance,
 		);
     }
@@ -165,33 +168,17 @@ function handle_points_post_request($request) {
 
 function update_user_points($user_id, $points, $points_balance) {
     global $wpdb;
-
+    //exit;
     
     $points_table = $wpdb->prefix . 'wc_points_rewards_user_points';
 
-    // Check if the user already has a record in the points table
-    $existing_record = $wpdb->get_var($wpdb->prepare("SELECT MAX(id) FROM $points_table WHERE user_id = %d", $user_id));
-    //var_dump($existing_record);
-    if ($existing_record) {
-		//var_dump($existing_record);
-		
-        // Update the existing record
-        $wpdb->update(
-            $points_table,
-            array('points' => $points, 'points_balance' => $points_balance),
-            array('id' => $existing_record)
-        );
-     } 
-    else {
-        // Insert a new record if the user doesn't have one
-        $wpdb->insert(
-            $points_table,
-            array('user_id' => $user_id, 'points' => $points, 'points_balance' => $points_balance)
-        );
-    }
+    // Insert a new record if the user doesn't have one
+    $wpdb->insert(
+        $points_table,
+        array('user_id' => $user_id, 'points' => $points, 'points_balance' => $points_balance)
+    );
+    
 }
-
-
 
 
 
@@ -200,40 +187,56 @@ function redeem_user_points($user_id, $points_to_redeem) {
 
     $points_table = $wpdb->prefix . 'wc_points_rewards_user_points';
 
-    // Check if the user has enough points to redeem
-    $user_data = get_user_points_and_balance($user_id);
-    if ($user_data->points_balance < $points_to_redeem) {
-        return; // Not enough points to redeem
+    while ($points_to_redeem > 0) {
+
+        // Fetch the oldest row for the user based on row ID
+        $oldest_row = $wpdb->get_row(
+            $wpdb->prepare(
+                "SELECT * FROM $points_table WHERE user_id = %d AND points_balance > 0 ORDER BY id ASC LIMIT 1",
+                $user_id
+            )
+        );
+
+        if (!$oldest_row) {
+            return false; // No more points to redeem
+        }
+
+        // Determine the points to be redeemed from this row
+        $redeem_from_this_row = min($points_to_redeem, $oldest_row->points_balance);
+
+        // Update the points balance in the oldest row
+        $new_balance = $oldest_row->points_balance - $redeem_from_this_row;
+        $wpdb->update(
+            $points_table,
+            array('points_balance' => $new_balance),
+            array('id' => $oldest_row->id)
+        );
+
+        // Update the total points redeemed
+        $points_to_redeem -= $redeem_from_this_row;
     }
 
-    // Update points_balance by subtracting redeemed points
-    $new_balance = $user_data->points_balance - $points_to_redeem;
-
-    // Update points_balance in the database
-    $wpdb->update(
-        $points_table,
-        array('points_balance' => $new_balance),
-        array('user_id' => $user_id)
-    );
+    return true; // Points redeemed successfully
 }
+
 
 //Getting User data by User ID
 function get_user_data_by_id($user_id) {
     global $wpdb;
 
-    $user_table = $wpdb->prefix . 'users';
+    //$user_table = $wpdb->prefix . 'users';
     $points_table = $wpdb->prefix . 'wc_points_rewards_user_points';
 
     $query = $wpdb->prepare(
-        "SELECT u.user_email, p.points_balance, p.points, p.order_id
-        FROM $user_table AS u
-        LEFT JOIN $points_table AS p ON u.ID = p.user_id
-        WHERE u.ID = %d",
-        $user_id
+        "SELECT *, (SELECT SUM(points_balance) FROM $points_table WHERE user_id = %d) AS total_points_balance, (SELECT SUM(points) FROM $points_table WHERE user_id = %d) AS total_points
+        FROM $points_table WHERE user_id = %d ORDER BY id DESC LIMIT 1", $user_id,
+        $user_id, $user_id
     );
+    
 
     return $wpdb->get_row($query);
 }
+
 
 //Getting User data by Email ID
 function get_user_data_by_email($user_email) {
@@ -253,9 +256,10 @@ function get_user_data_by_email($user_email) {
     return $wpdb->get_row($query);
 }
 
+
 function get_user_points_and_balance($user_id) {
     global $wpdb;
-
+    
     $points_table = $wpdb->prefix . 'wc_points_rewards_user_points';
 	
     // Prepare and execute the SQL query
@@ -267,6 +271,7 @@ function get_user_points_and_balance($user_id) {
     );
 
     $user_data = $wpdb->get_row($query);
+
 
     // If the user doesn't have a record, return default values
     if (!$user_data) {
